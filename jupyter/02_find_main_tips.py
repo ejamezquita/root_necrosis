@@ -1,39 +1,15 @@
 from glob import glob
-import cv2
 import numpy as np
+import matplotlib.pyplot as plt
 from scipy import ndimage, spatial
-
 import os
 import argparse
 import pandas as pd
-
-from skimage import morphology, graph
 import skfmm
-
 import gudhi as gd
 
 genotypes = ['CAL','MLB','222','299','517','521']
-imtype = ['Diseased', 'Healthy', 'Binary']
-pad = 5
-
-def read_binary_img(filename, threshold=100):
-    bimg = cv2.imread(filename)[:,:,0]
-    bimg[bimg < threshold] = 0
-    bimg[bimg > 0] = 1
-    bimg = bimg.astype(bool)
-
-    return bimg
-
-def clean_zeros_2d(img, pad=2):
-    foo = np.nonzero(np.any(img, axis=0))[0]
-    vceros = np.array([ max([0,foo[0] - pad]), min([img.shape[1], foo[-1]+pad]) ])
-    
-    foo = np.nonzero(np.any(img, axis=1))[0]
-    hceros = np.array([ max([0,foo[0] - pad]), min([img.shape[0], foo[-1]+pad]) ])
-
-    img = img[hceros[0]:hceros[1], vceros[0]:vceros[1]]
-    
-    return img, vceros, hceros
+zpad = 10
 
 def pers2numpy(pers):
     bd = np.zeros((len(pers), 3), dtype=float)
@@ -41,7 +17,7 @@ def pers2numpy(pers):
         bd[i, 0] = pers[i][0]
         bd[i, 1:] = pers[i][1]
     return bd
-    
+
 def main():
     
     parser = argparse.ArgumentParser(description='Extract a color matrix from a plate')
@@ -49,101 +25,61 @@ def main():
     args = parser.parse_args()
 
     runnum = args.runnum
-    
-    src = '../run{:02d}/'.format(runnum)
-    gdst = src + 'gudhi/'
+
+    src = '../run{:02d}/processed/'.format(runnum)
+
+    gdst = '../run{:02d}/gudhi/'.format(runnum)
+    ddst = '../run{:02d}/diagnostic/'.format(runnum)
     if not os.path.isdir(gdst):
         os.mkdir(gdst)
-
+    
     for gidx in range(len(genotypes)):
-        
-        bfiles = sorted(glob(src + '{}*/*{}*.jpg'.format(imtype[2], genotypes[gidx])))
+
+        bfiles = sorted(glob(src + '*{}*.npy'.format(genotypes[gidx])))
         print('Total number of files:\t{}'.format(len(bfiles)))
 
         for idx in range(len(bfiles)):
+        
+            bname = os.path.splitext(os.path.split(bfiles[idx])[1])[0].split('_-_')[0]
+            print(bname, sep='\n')
             
-            print(bfiles[idx])
-            bimg = read_binary_img(bfiles[idx])
-            bname = os.path.splitext(os.path.split(bfiles[idx])[1])[0].split('_ivc')[0].replace(' ','')
-
-            img = bimg.copy()
-            img = ndimage.binary_dilation(img, ndimage.generate_binary_structure(2,1), 3)
-            img, vceros, hceros = clean_zeros_2d(img)
-
-            label, nums = ndimage.label(img, structure=ndimage.generate_binary_structure(2,1))
-            print('Found',nums,'connected components')
-            hist, bins = np.histogram(label, bins=range(1,nums+2))
-            hargsort = np.argsort(hist)[::-1]
-
-            main = img.copy()
-            main[label != bins[hargsort[0]]] = False
-            edt = ndimage.distance_transform_edt(~main, return_distances=False, return_indices=True)
-
-            gimg = img.copy()
-
-            rest = img.copy()
-            rest[label == bins[hargsort[0]]] = False
-            skel = morphology.skeletonize(rest)
-            g,nodes = graph.pixel_graph(skel, connectivity=2)
-
-            argleaf = np.nonzero(np.sum(g.A > 0, axis=0) == 1)[0]
-            leafx = nodes[argleaf]%skel.shape[1]
-            leafy = nodes[argleaf]//skel.shape[1]
-            leafz = label[leafy, leafx]
-
-            eidx = np.zeros((len(leafx), 2), dtype=int)
-            for i in range(len(eidx)):
-                eidx[i] = edt[:, leafy[i], leafx[i]]
-
-            sdist = np.zeros(len(leafx))
-            for i in range(len(sdist)):
-                sdist[i] = (leafx[i]-eidx[i,1])**2 + (leafy[i]-eidx[i,0])**2
-            sdist = np.sqrt(sdist)
-
-            for i in range(nums):
-                dmask = leafz == i+1
-                if np.sum(dmask) > 0:
-                    cidx = np.argmin(sdist[dmask])
-                    if sdist[dmask][cidx] < 250:
-                        p0 = np.array([leafx[dmask][cidx], leafy[dmask][cidx]])
-                        p1 = eidx[dmask][cidx][::-1]
-                        
-                        lams = np.linspace(0,1, 2*int(sdist[dmask][cidx]))
-                        
-                        for j in range(len(lams)):
-                            line = p0 + lams[j]*(p1 - p0)
-                            line = line.astype(int)
-                            gimg[ line[1]-pad:line[1]+pad, line[0]-pad:line[0]+pad] = True
-                    
-                    else:
-                        gimg[ label == i+1] = False
-                        print(i, sdist[dmask], sep='\t')
-
-            foo, bar = ndimage.label(gimg, structure=ndimage.generate_binary_structure(2,1))
-            print('Found',bar,'connected components after processing')
-
-            # # Compute the Geodesic Distance Transform
-
-            m = np.copy(gimg)
-            m[0, gimg[0] ] = False
-            m = np.ma.masked_array(m, ~gimg)
-
-            gdt = skfmm.distance(m).data
-
-            # # Compute root tips via 0D persistence with geodesic filter
-
-            filename = gdst + bname + '_-_H0_{}_{}_{}_{}.csv'.format(*vceros, *hceros)
-            print(filename)
-
+            filename = gdst + bname + '_-_H0.csv'
             if not os.path.isfile(filename):
+            
+                gimg = np.load(bfiles[idx], allow_pickle=True)
+
+                # # Compute the Geodesic Distance Transform
+
+                m = np.copy(gimg)
+                m[0, gimg[0] ] = False
+                m = np.ma.masked_array(m, ~gimg)
+
+                gdt = skfmm.distance(m).data
+
+                fs = 12; fig, ax = plt.subplots(1,3, figsize=(9,5), sharex=True, sharey=True)
+                ax = np.atleast_1d(ax).ravel()
+
+                for i,im in enumerate([gimg, gdt, gdt - gimg*np.arange(len(gdt)).reshape(-1,1)]):
+                    ax[i].imshow(im, cmap='inferno', origin='upper', vmin=0)
+                    ax[i].tick_params(labelleft=False, left=False, bottom=False, labelbottom=False)
+
+                ax[0].set_ylabel(bname, fontsize=fs);  i = 0
+                ax[i].set_title('Binarized image', fontsize=fs); i+=1
+                ax[i].set_title('Geodesic distance from root base', fontsize=fs); i+=1
+                ax[i].set_title('Difference with vertical distance', fontsize=fs); i+=1
+
+                fig.tight_layout()
+                filename = ddst + 'geodesic_distance_transform_-_' + bname
+                plt.savefig(filename +'.png', format='png', bbox_inches='tight', dpi=200)
+                plt.close()
+
+                # # Compute root tips via 0D persistence with geodesic filter
+                
                 inv = np.max(gdt) - gdt
                 main = np.ravel(inv, 'F')
                 cc = gd.CubicalComplex(top_dimensional_cells = inv)
                 pers = cc.persistence(homology_coeff_field=2, min_persistence=10)
                 cof = cc.cofaces_of_persistence_pairs()
-                print(len(cof), len(cof[0]), len(cof[0][0]))
-                print(len(cof), len(cof[0]), len(cof[0][1]))
-                print(len(cof), len(cof[1]), len(cof[1][0]))
 
                 bd = pers2numpy(pers)
                 bd = np.atleast_2d(bd[np.all(bd < np.inf, axis=1), :]).squeeze()
@@ -156,14 +92,140 @@ def main():
                 rest = np.vstack(([cof[1][0][0], gdt.shape[0]*int(ndimage.center_of_mass(gimg[0])[0])], cof[0][0][foo]))
                 tips = np.column_stack((rest[:,0]%gdt.shape[0], rest[:,0]//gdt.shape[0]))
                 merge = np.column_stack((rest[:,1]%gdt.shape[0], rest[:,1]//gdt.shape[0]))
-                print(np.sum(main[rest] != bd0))
                 
+                geodesic = gdt[tips[:,0], tips[:,1]]
+                
+                filename = gdst + bname + '_-_H0.csv'
                 birthdeath = pd.DataFrame(bd0, columns=['birth','death'])
                 birthdeath['lifetime'] = lt
                 birthdeath = pd.concat((birthdeath, pd.DataFrame(rest, columns=['tipF','endF'])), axis=1)
                 birthdeath = pd.concat((birthdeath, pd.DataFrame(tips, columns=['tipX','tipY'])), axis=1)
                 birthdeath = pd.concat((birthdeath, pd.DataFrame(merge, columns=['endX','endY'])), axis=1)
+                birthdeath['root_geodesic'] = geodesic
                 birthdeath.to_csv(filename, index=False)
+
+                # # Must fit 1 out of 3 criteria to be considered a tip
+                # 
+                # - Long geodesic distance and part of the convex hull
+                # - Longer lifespan
+                # - Nothing else below a 50px thick strip
+
+                # Convex hull criterion
+
+                tconvexhull = spatial.ConvexHull(np.flip(tips, axis=1))
+                thull = tconvexhull.points[tconvexhull.vertices]
+                thull = np.vstack((thull, thull[0])).T
+
+                chmask = np.zeros(len(tips), dtype=bool)
+                chmask[tconvexhull.vertices] = True
+                chmask = chmask & (geodesic > 0.75*gimg.shape[1]) & (lt > 0.1*gimg.shape[1])
+
+                # Lifespan criterion
+
+                lmask = lt > 0.25*gdt.shape[0]
+                lmask = lmask | ( (tips[:,0] > np.quantile(tips[:,0], 0.875)) & (lt > max([np.sort(lt)[-10], np.quantile(lt, .975)]) ) )
+
+                # Vertical drop criterion
+
+                zeros = np.zeros(len(tips), dtype=int)
+
+                for i in range(len(zeros)):
+                    foo = gimg[:tips[i,0] - 1 , max([tips[i,1] - zpad, 0]):min([tips[i,1]+zpad, gimg.shape[1]])]
+                    bar = gimg[tips[i,0] + 1: , max([tips[i,1] - zpad, 0]):min([tips[i,1]+zpad, gimg.shape[1]])]
+                    zeros[i] = min([np.sum(foo), np.sum(bar)])
+
+                vmask = (zeros < 25) & (lt > 0.25*gimg.shape[1])
+
+                fs = 15; fig, ax = plt.subplots(1,3, figsize=(9,5), sharex=True, sharey=True)
+                ax = np.atleast_1d(ax).ravel()
+
+                for i,mask in enumerate([lmask, chmask, vmask]):
+                    ax[i].imshow(gdt, cmap='inferno', origin='upper', vmin=0)
+                    ax[i].scatter(tips[mask,1], tips[mask,0], marker='o', color='r', edgecolor='lime', linewidth=1, zorder=3)
+                    ax[i].scatter(merge[mask,1], merge[mask,0], marker='D', color='cyan', edgecolor='w', linewidth=1, zorder=3)
+                    ax[i].tick_params(labelleft=False, left=False, bottom=False, labelbottom=False)
+
+                ax[0].set_ylabel(bname, fontsize=fs)
+                ax[0].axhline(np.quantile(tips[:,0], 0.875), c='yellow', ls='--', lw=1)
+                ax[1].plot(*thull, c='yellow', lw=1, ls='--', zorder=2)
+
+                i = 0
+                ax[i].set_title('Lifetime criterion', fontsize=fs); i+=1
+                ax[i].set_title('Convex hull criterion', fontsize=fs); i+=1
+                ax[i].set_title('Vertical drop criterion', fontsize=fs); i+=1
+
+                fig.tight_layout()
+                filename = ddst + 'main_root_tip_-_' + bname
+                plt.savefig(filename +'.png', format='png', bbox_inches='tight', dpi=200)
+                plt.close()
+                
+                # Save tip mask
+
+                tmask = chmask | vmask | lmask
+                filename = gdst + bname + '_-_root_tips.csv'
+                print(filename)
+                np.savetxt(filename, np.nonzero(tmask)[0].reshape(1,-1), delimiter=',', fmt='%d')
+
+                # # Make a proper geodesic watershed
+
+                watershed = np.zeros(inv.shape, dtype=np.uint8)
+                colorval = 1
+                colordict = dict()
+
+                for ix in range(len(rest[tmask])-1, -1, -1):
+                    print('Iteration:\t', ix, '\n')
+                    thr = main[rest[tmask][ix,1]]
+                    timg = gimg*(inv < thr)
+                    
+                    label, nums = ndimage.label( timg, structure=ndimage.generate_binary_structure(2,1))
+                    print('Found',nums,'connected components')
+                    hist, bins = np.histogram(label, bins=range(1,nums+2))
+                    hargsort = np.argsort(hist)[::-1]
+                    mainlabels = np.zeros(ix+1, dtype=int)
+                    for i in range(len(mainlabels)):
+                        foo = label[tuple(tips[tmask][i])]
+                        mainlabels[i] = foo-1
+                    mainlabels = mainlabels[mainlabels > -1]
+                    minorlabels = np.setdiff1d(range(nums), mainlabels)
+                    print('Main labels:\t',mainlabels,'\nMinor labels:\t',minorlabels,'\n--\n')
+                    
+                    foo = timg*inv
+                    ends = np.asarray(ndimage.maximum_position(foo, label, index=range(1,nums+1)))
+                    sdist = spatial.distance_matrix(ends[mainlabels], ends[minorlabels])
+
+                    for i in range(len(mainlabels)):
+                        mask = (watershed == 0) & (label == mainlabels[i] + 1)
+                        watershed[mask] = colorval
+                        extras = np.nonzero(mainlabels[np.argmin(sdist, axis=0)] == mainlabels[i])[0]
+                        for j in minorlabels[extras]:
+                            mask = (watershed == 0) & (label == j+1)
+                            watershed[mask] = colorval
+                        
+                        colorlist = []
+                        for j in range(len(tips[tmask])):
+                            if label[tuple(tips[tmask][j])] == mainlabels[i] + 1:
+                                colorlist.append(rest[tmask][j,0])
+                        colordict[colorval] = colorlist
+                        colorval += 1
+
+                fs = 15; cmap = plt.get_cmap('Blues', len(colordict) + 1)
+                fig, ax = plt.subplots(1,1, figsize=(6,6), sharex=True, sharey=True)
+                ax = np.atleast_1d(ax).ravel()
+
+                a = ax[0].imshow(watershed, cmap=cmap, origin='upper', vmin=-.5, vmax=len(colordict)+.5)
+                ax[0].scatter(tips[tmask,1], tips[tmask,0], marker='o', color='r', edgecolor='lime', linewidth=1)
+                ax[0].scatter(merge[tmask,1], merge[tmask,0], marker='*', color='white', edgecolor='magenta', linewidth=1)
+                ax[0].tick_params(labelleft=False, left=False, bottom=False, labelbottom=False)
+                ax[0].set_ylabel(bname, fontsize=fs)
+                ax[0].set_title('Root tip-based watershed', fontsize=fs)
+                cax = plt.colorbar(a, ticks=range(len(colordict) + 1))
+
+                fig.tight_layout()
+
+                filename = ddst + 'watershed_root_tip_-_' + bname
+                plt.savefig(filename +'.png', format='png', bbox_inches='tight', dpi=200)
+                plt.close()
+
 
 if __name__ == '__main__':
     main()

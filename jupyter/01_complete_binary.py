@@ -158,9 +158,10 @@ def main():
 
                 fig.tight_layout();
 
-                filename = gdst + bname + '_fixed_strands'
+                filename = gdst + 'fixed_strands_-_' + bname
                 print(filename)
                 plt.savefig(filename+'.png', format='png', bbox_inches='tight', dpi=200)
+                plt.close()
         
             else:
                 print('Exisiting', filenames)
