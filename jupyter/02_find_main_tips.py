@@ -95,7 +95,7 @@ def main():
                 
                 geodesic = gdt[tips[:,0], tips[:,1]]
                 
-                filename = gdst + bname + '_-_H0.csv'
+                filename = gdst + bname + '_-_binary_H0.csv'
                 birthdeath = pd.DataFrame(bd0, columns=['birth','death'])
                 birthdeath['lifetime'] = lt
                 birthdeath = pd.concat((birthdeath, pd.DataFrame(rest, columns=['tipF','endF'])), axis=1)
